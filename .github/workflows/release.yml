@@ -51,6 +51,12 @@ jobs:
         run: |
           brew install xcodegen just
 
+      - name: Generate Swift bindings
+        # xcodegen validates the source list at project-generation time,
+        # which runs before xcodebuild's pre-build script. Materialise the
+        # generated bindings up front.
+        run: just bindgen
+
       - name: Build Saya.app (Release)
         run: just release
 
