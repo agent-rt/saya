@@ -1,0 +1,148 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.0.1)'
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  PRODUCT: saya
+  TAP_REPO: agent-rt/homebrew-tap
+
+jobs:
+  build-macos-arm64:
+    name: Build & publish (macOS arm64)
+    runs-on: macos-15  # Sequoia — needed for macOS 15 SDK (deployment target 15.0)
+    env:
+      TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG"           >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION"   >> "$GITHUB_OUTPUT"
+          echo "rel_tag=${{ env.PRODUCT }}-$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ env.TARGET }}
+
+      - name: Install build tooling
+        run: |
+          brew install xcodegen just
+
+      - name: Build Saya.app (Release)
+        run: just release
+
+      - name: Code-sign (ad-hoc)
+        run: |
+          # Deep-sign the bundle. The CI runner has no Developer ID; this
+          # produces an ad-hoc signature so Gatekeeper recognises the bundle
+          # as locally-built. Users get the standard "downloaded from
+          # internet" prompt on first launch.
+          codesign --force --deep --sign - output/Saya.app
+          codesign --verify --verbose output/Saya.app
+
+      - name: Create DMG
+        id: dmg
+        run: |
+          NAME="Saya-${{ steps.tag.outputs.tag }}-arm64"
+          mkdir -p dist
+          # Stage the .app + a symlink to /Applications so the DMG drag-to-install
+          # experience matches what users expect.
+          STAGE="$(mktemp -d /tmp/saya-dmg-XXXXXX)"
+          cp -R output/Saya.app "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create \
+            -volname "Saya" \
+            -srcfolder "$STAGE" \
+            -ov -format UDZO \
+            "dist/${NAME}.dmg"
+          rm -rf "$STAGE"
+
+          SHA="$(shasum -a 256 "dist/${NAME}.dmg" | awk '{print $1}')"
+          shasum -a 256 "dist/${NAME}.dmg" | tee "dist/${NAME}.dmg.sha256"
+          echo "dmg=dist/${NAME}.dmg"            >> "$GITHUB_OUTPUT"
+          echo "shafile=dist/${NAME}.dmg.sha256" >> "$GITHUB_OUTPUT"
+          echo "dmgname=${NAME}.dmg"             >> "$GITHUB_OUTPUT"
+          echo "sha256=${SHA}"                   >> "$GITHUB_OUTPUT"
+
+      - name: Publish release to tap repo
+        env:
+          GH_TOKEN: ${{ secrets.GH_DIST_TOKEN }}
+        run: |
+          gh release create "${{ steps.tag.outputs.rel_tag }}" \
+            --repo "${{ env.TAP_REPO }}" \
+            --title "Saya ${{ steps.tag.outputs.tag }}" \
+            --notes-file CHANGELOG.md \
+            --prerelease \
+            "${{ steps.dmg.outputs.dmg }}" \
+            "${{ steps.dmg.outputs.shafile }}" \
+            || gh release upload "${{ steps.tag.outputs.rel_tag }}" \
+               --repo "${{ env.TAP_REPO }}" --clobber \
+               "${{ steps.dmg.outputs.dmg }}" \
+               "${{ steps.dmg.outputs.shafile }}"
+
+      - name: Update Homebrew cask in tap repo
+        env:
+          GH_TOKEN: ${{ secrets.GH_DIST_TOKEN }}
+        run: |
+          set -eu
+          VERSION="${{ steps.tag.outputs.version }}"
+          REL_TAG="${{ steps.tag.outputs.rel_tag }}"
+          DMGNAME="${{ steps.dmg.outputs.dmgname }}"
+          SHA256="${{ steps.dmg.outputs.sha256 }}"
+          URL="https://github.com/${{ env.TAP_REPO }}/releases/download/${REL_TAG}/${DMGNAME}"
+
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${{ env.TAP_REPO }}.git" tap
+          cd tap
+          mkdir -p Casks
+
+          cat > Casks/saya.rb <<CASK
+          cask "saya" do
+            version "${VERSION}"
+            sha256 "${SHA256}"
+
+            url "${URL}"
+            name "Saya"
+            desc "Local AI launcher with semantic clipboard history"
+            homepage "https://github.com/agent-rt/saya"
+
+            depends_on macos: ">= :sequoia"
+            depends_on arch: :arm64
+
+            app "Saya.app"
+
+            zap trash: [
+              "~/Library/Application Support/Saya",
+              "~/Library/Caches/Saya",
+              "~/Library/Preferences/app.saya.plist",
+            ]
+          end
+          CASK
+
+          git config user.name  "agent-rt-bot"
+          git config user.email "agent-rt-bot@users.noreply.github.com"
+          git add Casks/saya.rb
+          git commit -m "saya ${VERSION}" || { echo "cask unchanged"; exit 0; }
+          git push origin HEAD:main

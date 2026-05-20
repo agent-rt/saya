@@ -1,0 +1,68 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Background: indigo → near-black, the "before unsheathed" night sky -->
+    <linearGradient id="bg" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#5b21b6"/>
+      <stop offset="55%" stop-color="#312e81"/>
+      <stop offset="100%" stop-color="#0c0a2e"/>
+    </linearGradient>
+
+    <!-- Blade: warm-tinted off-white with a subtle highlight along the cutting edge -->
+    <linearGradient id="blade" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%"  stop-color="#e7e5e4"/>
+      <stop offset="55%" stop-color="#fafafa"/>
+      <stop offset="100%" stop-color="#cbd5e1"/>
+    </linearGradient>
+
+    <!-- Highlight stripe along the spine -->
+    <linearGradient id="spine" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%"  stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- Hilt accent: amber -->
+    <radialGradient id="hilt" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"  stop-color="#fde68a"/>
+      <stop offset="60%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#b45309"/>
+    </radialGradient>
+
+    <!-- Soft outer glow on the blade for depth -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="14"/>
+    </filter>
+  </defs>
+
+  <!-- Rounded square: macOS app icon shape (≈22% radius) -->
+  <rect x="0" y="0" width="1024" height="1024" rx="228" ry="228" fill="url(#bg)"/>
+
+  <!-- Sheath edge: a soft horizontal line low and to the left -->
+  <rect x="120" y="788" width="380" height="14" rx="7"
+        fill="#1e1b4b" opacity="0.6"/>
+  <rect x="120" y="788" width="380" height="3" rx="1.5"
+        fill="#a78bfa" opacity="0.55"/>
+
+  <!-- Blade shadow (offset) -->
+  <g transform="translate(8 8)" opacity="0.35" filter="url(#glow)">
+    <path d="M 224 768 L 264 808 L 808 264 L 768 224 Z" fill="#000"/>
+  </g>
+
+  <!-- Blade body — tapered toward both tips -->
+  <path d="M 222 776 L 248 818 L 818 248 L 776 222 Z"
+        fill="url(#blade)"/>
+
+  <!-- Highlight along the spine -->
+  <path d="M 250 776 L 258 806 L 806 258 L 776 250 Z"
+        fill="url(#spine)"/>
+
+  <!-- Hilt: amber disc + ring -->
+  <circle cx="220" cy="804" r="64" fill="url(#hilt)"/>
+  <circle cx="220" cy="804" r="64" fill="none"
+          stroke="#fde68a" stroke-width="3" opacity="0.7"/>
+
+  <!-- Sub-hilt collar (tsuba): a small dark square between hilt and blade -->
+  <rect x="244" y="744" width="74" height="74" rx="10"
+        transform="rotate(45 281 781)"
+        fill="#0c0a2e" stroke="#a78bfa" stroke-width="3"/>
+</svg>

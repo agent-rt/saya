@@ -1,0 +1,62 @@
+[workspace]
+resolver = "2"
+members = ["crates/saya-core", "crates/saya-cli", "crates/saya-ffi"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT"
+repository = "https://github.com/agent-rt/saya"
+
+[workspace.dependencies]
+# Internal
+saya-core = { path = "crates/saya-core" }
+
+# Storage
+rusqlite = { version = "0.39", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.34"
+sqlite-vec = "0.1"
+
+# Search
+tantivy = "0.26"
+jieba-rs = "0.9"
+
+# AI (gated by `embedding` feature; kept out of default build to speed compile)
+candle-core = { version = "0.10", features = ["metal"] }
+candle-nn = { version = "0.10", features = ["metal"] }
+candle-transformers = { version = "0.10", features = ["metal"] }
+tokenizers = "0.23"
+hf-hub = "0.5"
+
+# macOS platform
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+notify = "8"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Async / runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+
+# FFI
+uniffi = "0.31"
+
+# Concurrency
+rayon = "1"
+
+# Utils
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

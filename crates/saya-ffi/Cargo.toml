@@ -1,0 +1,28 @@
+[package]
+name = "saya-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+# staticlib for embedding into the macOS app; cdylib so uniffi-bindgen can
+# read exported metadata via `--library`.
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi_bindgen.rs"
+required-features = ["uniffi-cli"]
+
+[dependencies]
+saya-core.workspace = true
+uniffi.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[features]
+default = []
+# Pass-through to saya-core's embedding feature.
+embedding = ["saya-core/embedding"]
+uniffi-cli = ["uniffi/cli"]
