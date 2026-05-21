@@ -130,19 +130,14 @@ struct PanelFooter: View {
     }
 }
 
-/// Full-bleed selection background (no inset rounding) — matches Raycast,
-/// plus a thin accent stripe on the leading edge of the selected row.
+/// Full-bleed selection background — kept deliberately neutral. Accent-
+/// coloured fills were jarring when selection flicked between rows under
+/// the cursor; a low-opacity primary tone blends with the panel material.
 struct SelectionBackground: View {
     let isSelected: Bool
     var body: some View {
-        ZStack(alignment: .leading) {
-            if isSelected {
-                Rectangle()
-                    .fill(Color.accentColor.opacity(0.18))
-                Rectangle()
-                    .fill(Color.accentColor)
-                    .frame(width: 3)
-            }
+        if isSelected {
+            Color.primary.opacity(0.06)
         }
     }
 }

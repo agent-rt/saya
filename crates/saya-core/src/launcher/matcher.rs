@@ -88,7 +88,7 @@ fn base_score(query: &[char], target: &str) -> Option<i32> {
     Some(s)
 }
 
-fn mru_bonus(m: MruInfo) -> i32 {
+pub(crate) fn mru_bonus(m: MruInfo) -> i32 {
     let now = now_ms();
     let days = ((now - m.last_used_ms).max(0) / 86_400_000) as i32;
     let recency = match days {

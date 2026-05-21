@@ -11,6 +11,8 @@
 
 uniffi::setup_scaffolding!("saya");
 
+mod logging;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -149,8 +151,15 @@ impl Saya {
     /// created if missing.
     #[uniffi::constructor]
     pub fn new(db_path: String) -> Result<Arc<Self>, SayaError> {
+        // Idempotent — the first Saya instance wires up tracing for the
+        // whole process; subsequent calls (e.g. tests, CLI) are no-ops.
+        logging::init();
         let path = PathBuf::from(&db_path);
-        let db = Database::open(&path)?;
+        tracing::info!(db_path = %path.display(), "opening Saya");
+        let db = Database::open(&path).inspect_err(|e| {
+            tracing::error!(error = %e, "database open failed");
+        })?;
+        tracing::info!("Saya ready");
         Ok(Arc::new(Self {
             db,
             db_path: path,
@@ -203,13 +212,22 @@ impl Saya {
         query: String,
         limit: u32,
     ) -> Result<Vec<MatchedAppDto>, SayaError> {
+        let started = std::time::Instant::now();
         let idx = self.ensure_launcher()?;
         let mru = self.cached_mru()?;
-        Ok(idx
+        let results: Vec<MatchedAppDto> = idx
             .match_query(&query, limit as usize, &mru)
             .into_iter()
             .map(Into::into)
-            .collect())
+            .collect();
+        tracing::debug!(
+            query = %query,
+            limit,
+            results = results.len(),
+            elapsed = ?started.elapsed(),
+            "match_apps"
+        );
+        Ok(results)
     }
 
     /// Rebuild the app index from disk (e.g. after the user installs a new app).
@@ -433,4 +451,27 @@ pub fn default_db_path() -> String {
     saya_core::paths::default_db_path()
         .to_string_lossy()
         .into_owned()
+}
+
+/// Default log file path (`~/Library/Logs/Saya/saya.log`).
+#[uniffi::export]
+pub fn default_log_path() -> String {
+    saya_core::paths::default_log_path()
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Emit a log line from the Swift side into the shared tracing pipeline.
+/// `level` is one of "error" | "warn" | "info" | "debug" | "trace"
+/// (unknown levels fall through to info).
+#[uniffi::export]
+pub fn log_from_swift(level: String, message: String) {
+    logging::init();
+    match level.as_str() {
+        "error" => tracing::error!(target: "saya_ui", "{message}"),
+        "warn"  => tracing::warn!(target:  "saya_ui", "{message}"),
+        "debug" => tracing::debug!(target: "saya_ui", "{message}"),
+        "trace" => tracing::trace!(target: "saya_ui", "{message}"),
+        _       => tracing::info!(target:  "saya_ui", "{message}"),
+    }
 }

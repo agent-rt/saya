@@ -20,3 +20,13 @@ pub fn cache_dir() -> PathBuf {
 pub fn icon_cache_dir() -> PathBuf {
     cache_dir().join("icons")
 }
+
+/// `~/Library/Logs/Saya/`. Append-only operational logs.
+pub fn log_dir() -> PathBuf {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    home.join("Library/Logs/Saya")
+}
+
+pub fn default_log_path() -> PathBuf {
+    log_dir().join("saya.log")
+}

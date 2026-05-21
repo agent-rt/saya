@@ -49,6 +49,35 @@ enum Cmd {
         #[arg(short, long, default_value_t = 200)]
         limit: usize,
     },
+    /// Print path to the Saya log file.
+    LogPath,
+    /// Tail the Saya log file (-f / follow mode).
+    Logs {
+        /// Follow new entries (`tail -f`).
+        #[arg(short, long)]
+        follow: bool,
+        /// Number of lines to show.
+        #[arg(short = 'n', long, default_value_t = 100)]
+        lines: usize,
+    },
+    /// Send a JSON-RPC command to the running Saya app's DevServer.
+    ///
+    ///   saya dev ping
+    ///   saya dev panel.open --params '{"kind":"launcher"}'
+    ///   saya dev input.set  --params '{"query":"chr"}'
+    ///   saya dev launcher.snapshot
+    Dev {
+        method: String,
+        /// JSON object for the params field. Defaults to `{}`.
+        #[arg(short, long)]
+        params: Option<String>,
+        /// Override host:port (default: 127.0.0.1:7896).
+        #[arg(long, default_value = "127.0.0.1:7896")]
+        addr: String,
+        /// Keep reading after the initial response — for `event.subscribe`.
+        #[arg(short, long)]
+        follow: bool,
+    },
     /// Fuzzy-match an installed application by name and launch the best hit.
     Launch {
         query: String,
@@ -88,6 +117,23 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    // Handle commands that don't require opening the DB (so they work even
+    // when the DB is locked by the GUI).
+    match &cli.cmd {
+        Cmd::LogPath => {
+            println!("{}", saya_core::paths::default_log_path().display());
+            return Ok(());
+        }
+        Cmd::Logs { follow, lines } => {
+            return tail_log(*follow, *lines);
+        }
+        Cmd::Dev { method, params, addr, follow } => {
+            return dev_rpc(method, params.as_deref(), addr, *follow);
+        }
+        _ => {}
+    }
+
     let db_path = cli.db.unwrap_or_else(saya_core::paths::default_db_path);
     let db = Database::open(&db_path)?;
 
@@ -247,6 +293,102 @@ fn main() -> anyhow::Result<()> {
                 None => println!("skipped (duplicate of most recent)"),
             }
         }
+        // Already handled before opening the DB.
+        Cmd::LogPath | Cmd::Logs { .. } | Cmd::Dev { .. } => unreachable!(),
     }
     Ok(())
+}
+
+fn dev_rpc(method: &str, params: Option<&str>, addr: &str, follow: bool) -> anyhow::Result<()> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let params_val: serde_json::Value = match params {
+        Some(s) => serde_json::from_str(s)?,
+        None => serde_json::json!({}),
+    };
+    let req = serde_json::json!({
+        "id": 1,
+        "method": method,
+        "params": params_val,
+    });
+
+    let mut stream = TcpStream::connect_timeout(&addr.parse()?, Duration::from_secs(2))?;
+    if !follow {
+        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    }
+    writeln!(stream, "{req}")?;
+    stream.flush()?;
+    let reader = BufReader::new(&stream);
+    let mut lines = reader.lines();
+    // First line: the response to our request.
+    let Some(first) = lines.next() else {
+        anyhow::bail!("DevServer closed connection without responding");
+    };
+    let first = first?;
+    print_pretty(&first)?;
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&first) {
+        if v.get("error").is_some() && !follow {
+            std::process::exit(2);
+        }
+    }
+    if !follow {
+        return Ok(());
+    }
+    // Stream subsequent lines (events) until the server closes.
+    for line in lines {
+        let line = line?;
+        if line.is_empty() { continue; }
+        print_pretty(&line)?;
+    }
+    Ok(())
+}
+
+fn print_pretty(line: &str) -> anyhow::Result<()> {
+    let v: serde_json::Value = serde_json::from_str(line)?;
+    println!("{}", serde_json::to_string_pretty(&v)?);
+    Ok(())
+}
+
+fn tail_log(follow: bool, lines: usize) -> anyhow::Result<()> {
+    let path = saya_core::paths::default_log_path();
+    if !path.exists() {
+        eprintln!("no log file yet at {}", path.display());
+        return Ok(());
+    }
+    // Print last N lines.
+    let content = std::fs::read_to_string(&path)?;
+    let collected: Vec<&str> = content.lines().collect();
+    let start = collected.len().saturating_sub(lines);
+    for line in &collected[start..] {
+        println!("{line}");
+    }
+    if !follow {
+        return Ok(());
+    }
+    // Simple tail -f: poll file size and stream new bytes.
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+    let f = std::fs::File::open(&path)?;
+    let mut reader = BufReader::new(f);
+    let mut pos = reader.seek(SeekFrom::End(0))?;
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let len = std::fs::metadata(&path)?.len();
+        if len < pos {
+            // truncated; reset
+            pos = 0;
+            reader.seek(SeekFrom::Start(0))?;
+        }
+        if len > pos {
+            let mut buf = String::new();
+            loop {
+                buf.clear();
+                let n = reader.read_line(&mut buf)?;
+                if n == 0 { break; }
+                print!("{buf}");
+            }
+            pos = reader.stream_position()?;
+        }
+    }
 }

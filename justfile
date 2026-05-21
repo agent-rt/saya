@@ -37,6 +37,32 @@ bindgen:
 icon:
     ./scripts/make-icon.sh
 
+# End-to-end dev loop: rebuild, relaunch, drive a query via AppleScript,
+# print the log slice produced by this iteration.
+#   just devloop                    # default: type "chr", dismiss
+#   just devloop "1+2*3"            # custom query
+#   just devloop "chr" launch       # type chr, press Return
+#   just devloop "" leave 0         # just open the panel, leave it
+devloop *args:
+    ./scripts/devloop.sh {{args}}
+
+# Tail the Saya log file.
+tail-log:
+    tail -f -n 50 ~/Library/Logs/Saya/saya.log
+
+# Interactive bug-report capture: restart Saya with debug logging, let user
+# reproduce, then writes /tmp/saya-diagnose-<timestamp>.log.
+diagnose:
+    ./scripts/diagnose.sh
+
+# End-to-end test suite via the DevServer RPC.
+# Builds, ensures Saya is running, drives the full state machine through
+# JSON-RPC, asserts on snapshots.
+e2e:
+    just build
+    cargo build -p saya-cli
+    ./scripts/test/e2e.sh
+
 # Run Rust tests (with the `embedding` feature so the AI path compiles).
 test:
     cargo test --features embedding

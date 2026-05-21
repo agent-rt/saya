@@ -18,22 +18,56 @@ pub fn launch(path: &Path) -> crate::Result<()> {
     Ok(())
 }
 
-/// Returns PNG bytes for `path`, using a persistent on-disk cache at
-/// `~/Library/Caches/Saya/icons/` so subsequent lookups (this session or any
-/// later one) skip NSWorkspace + PNG encode entirely.
+/// Returns image bytes for `path`, using a persistent on-disk cache at
+/// `~/Library/Caches/Saya/icons/`.
+///
+/// Cold path prefers reading the `.icns` directly from the app bundle's
+/// `Contents/Resources/` — that's the ground-truth artwork without paying
+/// the NSWorkspace + LaunchServices roundtrip (which serialises across
+/// threads and can take 100s of ms per call on a cold system). Falls back
+/// to NSWorkspace + PNG encode if no .icns is found.
+///
+/// `NSImage(data:)` on the Swift side handles both `.icns` and `.png`
+/// transparently, so the cache file format is opaque to consumers.
+///
+/// Writes are atomic (tmp + rename).
 pub fn icon_png(path: &Path) -> crate::Result<Vec<u8>> {
     let cache_path = cache_path_for(path);
     if let Ok(bytes) = std::fs::read(&cache_path) {
-        return Ok(bytes);
+        if !bytes.is_empty() {
+            return Ok(bytes);
+        }
+        tracing::warn!(path = %cache_path.display(), "empty cache file; re-extracting");
     }
-    let bytes = extract_icon_png(path)?;
+    let bytes = match read_bundle_icns(path) {
+        Some(b) if !b.is_empty() => b,
+        _ => extract_icon_png(path)?,
+    };
     if let Some(parent) = cache_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Err(e) = std::fs::write(&cache_path, &bytes) {
-        tracing::warn!(error = %e, path = %cache_path.display(), "icon cache write failed");
+    let tmp = cache_path.with_extension("png.tmp");
+    if let Err(e) = std::fs::write(&tmp, &bytes) {
+        tracing::warn!(error = %e, path = %tmp.display(), "icon cache tmp write failed");
+    } else if let Err(e) = std::fs::rename(&tmp, &cache_path) {
+        tracing::warn!(error = %e, path = %cache_path.display(), "icon cache rename failed");
+        let _ = std::fs::remove_file(&tmp);
     }
     Ok(bytes)
+}
+
+/// Read the first `.icns` file inside the app bundle's Resources directory.
+/// Returns `None` if the bundle layout isn't standard or the file is empty.
+fn read_bundle_icns(app_path: &Path) -> Option<Vec<u8>> {
+    let resources = app_path.join("Contents/Resources");
+    let entries = std::fs::read_dir(&resources).ok()?;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|s| s.to_str()) == Some("icns") {
+            return std::fs::read(&p).ok();
+        }
+    }
+    None
 }
 
 fn cache_path_for(path: &Path) -> PathBuf {
@@ -85,14 +119,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extracts_png_for_finder() {
+    fn extracts_icon_for_finder() {
         let path = std::path::PathBuf::from("/System/Library/CoreServices/Finder.app");
         if !path.exists() {
             return;
         }
-        let png = icon_png(&path).expect("icon_png");
-        assert!(png.len() > 100);
-        assert_eq!(&png[..8], &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+        let bytes = icon_png(&path).expect("icon_png");
+        assert!(bytes.len() > 100, "icon should be > 100 bytes, got {}", bytes.len());
+        // Accept PNG (NSWorkspace fallback) or ICNS (direct bundle read).
+        let png_magic: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        let icns_magic: &[u8] = b"icns";
+        assert!(
+            bytes.starts_with(png_magic) || bytes.starts_with(icns_magic),
+            "unexpected magic: {:02x?}",
+            &bytes[..bytes.len().min(8)]
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@ struct ClipboardView: View {
     @State private var semantic: Bool = false
     @State private var hits: [SearchHitDto] = []
     @State private var selected: Int = 0
+    @State private var lastHoverLocation: NSPoint?
     @FocusState private var focused: Bool
 
     private var items: [Item] {
@@ -62,6 +63,9 @@ struct ClipboardView: View {
             selected = 0
         }
         .onAppear { focused = true }
+        .onChange(of: state.clipboardFocusTrigger) { _, _ in
+            focused = true
+        }
     }
 
     @ViewBuilder
@@ -99,7 +103,13 @@ struct ClipboardView: View {
                             .id(idx)
                             .contentShape(Rectangle())
                             .onHover { hovering in
-                                if hovering { selected = idx }
+                                guard hovering else { return }
+                                let now = NSEvent.mouseLocation
+                                if let last = lastHoverLocation, last == now {
+                                    return
+                                }
+                                lastHoverLocation = now
+                                selected = idx
                             }
                             .onTapGesture {
                                 selected = idx

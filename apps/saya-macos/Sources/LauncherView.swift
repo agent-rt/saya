@@ -4,34 +4,27 @@ import SwiftUI
 struct LauncherView: View {
     var onDismiss: () -> Void = {}
 
-    @Environment(AppState.self) private var state
-    @State private var query: String = ""
-    @State private var apps: [MatchedAppDto] = []
-    @State private var calc: CalcResult?
-    @State private var selected: Int = 0
+    @Environment(AppState.self) private var stateEnv
+    @State private var selectionFromKeyboard: Bool = true
+    @State private var lastHoverLocation: NSPoint?
     @FocusState private var focused: Bool
 
-    private var items: [LauncherResult] {
-        var out: [LauncherResult] = []
-        if let calc { out.append(.calc(calc)) }
-        out.append(contentsOf: apps.map { .app($0) })
-        return out
-    }
-
     var body: some View {
+        @Bindable var state = stateEnv
         PanelChrome {
             VStack(spacing: 0) {
                 PanelSearchField(
                     placeholder: "Search applications or calculate…",
-                    text: $query,
+                    text: $state.launcherQuery,
                     focused: $focused,
                     onSubmit: execute,
                     onUp: { moveSelection(-1) },
                     onDown: { moveSelection(1) },
                     onCmdDigit: { n in
                         let idx = n - 1
-                        guard idx < items.count else { return false }
-                        selected = idx
+                        guard idx < state.launcherItems.count else { return false }
+                        selectionFromKeyboard = true
+                        state.launcherSelected = idx
                         execute()
                         return true
                     }
@@ -46,26 +39,23 @@ struct LauncherView: View {
                 PanelFooter(hints: footerHints)
             }
         }
-        .task(id: query) {
-            // Calculator runs synchronously and is essentially free; do it
-            // before the FFI roundtrip so the calc row is up the moment the
-            // user finishes typing.
-            calc = Calculator.evaluate(query).map {
-                CalcResult(expression: query.trimmingCharacters(in: .whitespaces),
-                           value: Calculator.format($0))
-            }
-            let limit: UInt32 = query.isEmpty ? 50 : 12
-            let r = await state.matchApps(query, limit: limit)
-            if Task.isCancelled { return }
-            apps = r
-            selected = 0
+        .task(id: state.launcherQuery) {
+            await state.refreshLauncher()
         }
         .onAppear { focused = true }
+        // Panel may be reused across show/hide; `.onAppear` doesn't refire
+        // in that case, so the search field would stay defocused on second
+        // open. PanelController bumps this trigger on every show.
+        .onChange(of: state.launcherFocusTrigger) { _, _ in
+            focused = true
+        }
     }
 
     private var footerHints: [PanelFooter.Hint] {
         let primary: PanelFooter.Hint
-        if case .calc = items.indices.contains(selected) ? items[selected] : nil {
+        let items = stateEnv.launcherItems
+        if items.indices.contains(stateEnv.launcherSelected),
+           case .calc = items[stateEnv.launcherSelected] {
             primary = .init(key: "↵", label: "Copy result")
         } else {
             primary = .init(key: "↵", label: "Open")
@@ -75,8 +65,9 @@ struct LauncherView: View {
 
     @ViewBuilder
     private var content: some View {
+        let items = stateEnv.launcherItems
         if items.isEmpty {
-            if !query.isEmpty {
+            if !stateEnv.launcherQuery.isEmpty {
                 VStack {
                     Spacer()
                     Text("No matches").font(.callout).foregroundStyle(.secondary)
@@ -89,24 +80,39 @@ struct LauncherView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
+                        ForEach(Array(items.enumerated()), id: \.element.id) { idx, item in
                             row(for: item, at: idx)
-                                .id(idx)
                                 .contentShape(Rectangle())
                                 .onHover { hovering in
-                                    if hovering { selected = idx }
+                                    guard hovering else { return }
+                                    let now = NSEvent.mouseLocation
+                                    // Ignore "phantom hovers" — new rows
+                                    // sliding under a stationary cursor on
+                                    // re-render shouldn't steal selection
+                                    // away from the keyboard default
+                                    // (otherwise Enter opens whichever app
+                                    // happens to be under the cursor).
+                                    if let last = lastHoverLocation, last == now {
+                                        return
+                                    }
+                                    lastHoverLocation = now
+                                    selectionFromKeyboard = false
+                                    stateEnv.launcherSelected = idx
                                 }
                                 .onTapGesture {
-                                    selected = idx
+                                    selectionFromKeyboard = false
+                                    stateEnv.launcherSelected = idx
                                     execute()
                                 }
                         }
                     }
                     .padding(.vertical, 4)
                 }
-                .onChange(of: selected) { _, new in
+                .onChange(of: stateEnv.launcherSelected) { _, new in
+                    guard selectionFromKeyboard else { return }
+                    guard items.indices.contains(new) else { return }
                     withAnimation(.easeOut(duration: 0.08)) {
-                        proxy.scrollTo(new, anchor: .center)
+                        proxy.scrollTo(items[new].id, anchor: .center)
                     }
                 }
             }
@@ -116,7 +122,7 @@ struct LauncherView: View {
     @ViewBuilder
     private func row(for item: LauncherResult, at idx: Int) -> some View {
         let shortcut = idx < 9 ? idx + 1 : nil
-        let selected = idx == selected
+        let selected = idx == stateEnv.launcherSelected
         switch item {
         case .calc(let c):
             CalcRow(result: c, isSelected: selected, shortcut: shortcut)
@@ -126,32 +132,16 @@ struct LauncherView: View {
     }
 
     private func moveSelection(_ delta: Int) {
+        let items = stateEnv.launcherItems
         guard !items.isEmpty else { return }
-        selected = (selected + delta).clamped(to: 0...(items.count - 1))
+        selectionFromKeyboard = true
+        stateEnv.launcherSelected = (stateEnv.launcherSelected + delta).clamped(to: 0...(items.count - 1))
     }
 
     private func execute() {
-        guard items.indices.contains(selected) else { return }
-        switch items[selected] {
-        case .calc(let c):
-            state.copyToPasteboard(c.value)
-        case .app(let app):
-            state.launch(app.path)
-        }
+        stateEnv.executeLauncherSelection()
         onDismiss()
     }
-}
-
-// MARK: - Result model
-
-enum LauncherResult {
-    case calc(CalcResult)
-    case app(MatchedAppDto)
-}
-
-struct CalcResult: Equatable {
-    let expression: String
-    let value: String
 }
 
 // MARK: - Rows
@@ -231,9 +221,9 @@ private struct AppRow: View {
         .padding(.vertical, PanelMetrics.rowVerticalPadding)
         .background(SelectionBackground(isSelected: isSelected))
         .task(id: app.path) {
-            if icon == nil {
-                icon = await state.iconImage(app.path)
-            }
+            // Always reload — never trust a pre-existing icon, since
+            // SwiftUI may have reused this view's @State for a different app.
+            icon = await state.iconImage(app.path)
         }
     }
 }
